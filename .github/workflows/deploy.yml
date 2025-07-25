@@ -2,7 +2,7 @@ name: EC2 Deploy Automation
 
 on:
   push:
-    branches: [main]
+    branches: [master]  # Use 'main' if that's your branch name
   workflow_dispatch:
 
 jobs:
@@ -21,22 +21,33 @@ jobs:
       - name: Deploy on EC2
         run: |
           ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
+            # Print EC2 identity
+            echo "Logged into EC2 instance"
+
             # Install dependencies
             sudo yum update -y
             sudo yum install -y java-21-amazon-corretto git maven
 
-            # Clone project repo
-            rm -rf techeazy-devops || true
-            git clone https://github.com/techeazy-consulting/techeazy-devops.git
-            cd techeazy-devops
+            # Clone and build the app
+            rm -rf ec2-deploy-automation || true
+            git clone https://github.com/Erharshita-cloud/ec2-deploy-automation.git
+            cd ec2-deploy-automation
 
-            # Build the Maven project
+            # Run the Java App
             mvn clean package
 
-            # Kill existing app if running
+            # Kill existing app (if any)
             sudo pkill -f 'java -jar' || true
 
-            # Run app
+            # Run the JAR file
             nohup java -jar target/*.jar > app.log 2>&1 &
-          EOF
 
+            # Wait a few seconds for the app to start
+            sleep 10
+
+            # Test if port 80 is working
+            curl -I http://localhost || echo "App not responding on port 80"
+            
+            # Schedule instance shutdown in 2 minutes
+            sudo shutdown -h +2 "Auto-shutdown for cost saving"
+          EOF
