@@ -2,16 +2,53 @@ name: EC2 Deploy Automation
 
 on:
   push:
-    branches: [master]  # Use 'main' if that's your branch name
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    env:
+      AWS_REGION: ap-south-1  # Replace with your region
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Launch EC2 Instance
+        id: ec2
+        run: |
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id ami-0c2d3f0f70b7eaeee \  # Use correct AMI
+            --instance-type t2.micro \
+            --key-name devops-key \  # Replace with your key name
+            --security-group-ids sg-xxxxxxxx \  # Replace
+            --subnet-id subnet-xxxxxxxx \  # Replace
+            --count 1 \
+            --query "Instances[0].InstanceId" \
+            --output text)
+
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+
+      - name: Wait for EC2 Instance to Start
+        run: |
+          aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+
+      - name: Get Public IP
+        run: |
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+          echo "EC2_PUBLIC_IP=$PUBLIC_IP" >> "$GITHUB_ENV"
 
       - name: Set up SSH to EC2
         uses: webfactory/ssh-agent@v0.9.0
@@ -20,34 +57,13 @@ jobs:
 
       - name: Deploy on EC2
         run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
-            # Print EC2 identity
-            echo "Logged into EC2 instance"
-
-            # Install dependencies
+          ssh -o StrictHostKeyChecking=no ubuntu@$EC2_PUBLIC_IP << 'EOF'
             sudo yum update -y
             sudo yum install -y java-21-amazon-corretto git maven
-
-            # Clone and build the app
-            rm -rf ec2-deploy-automation || true
-            git clone https://github.com/Erharshita-cloud/ec2-deploy-automation.git
-            cd ec2-deploy-automation
-
-            # Run the Java App
+            rm -rf techeazy-devops || true
+            git clone https://github.com/techeazy-consulting/techeazy-devops.git
+            cd techeazy-devops
             mvn clean package
-
-            # Kill existing app (if any)
             sudo pkill -f 'java -jar' || true
-
-            # Run the JAR file
             nohup java -jar target/*.jar > app.log 2>&1 &
-
-            # Wait a few seconds for the app to start
-            sleep 10
-
-            # Test if port 80 is working
-            curl -I http://localhost || echo "App not responding on port 80"
-            
-            # Schedule instance shutdown in 2 minutes
-            sudo shutdown -h +2 "Auto-shutdown for cost saving"
           EOF
